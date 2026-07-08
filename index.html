@@ -358,6 +358,7 @@
   table.score-table td{text-align:center; padding:7px 2px; border-bottom:1px solid var(--paper-dim);}
   table.score-table td:first-child, table.score-table th:first-child{text-align:left; font-weight:600;}
   table.score-table tr.total-row td{font-weight:700; border-top:1.5px solid var(--ink); border-bottom:none;}
+  table.score-table td.subtotal-col, table.score-table th.subtotal-col{background:var(--paper-dim); font-weight:700;}
 
   /* ---------- Bottom nav ---------- */
   .bottom-nav{
@@ -1423,34 +1424,65 @@ function toggleScorecardView(){
   }
 }
 
+function scorecardRowCells(values, holesCount, opts){
+  // values: array (length holesCount) of raw values — numbers, true/false (GIR), or null
+  // opts: { display: (v)=>string, sum: (slice)=>number|string, cellAttrs: (i)=>string, bold: bool }
+  const display = opts.display || (v => v != null ? String(v) : '–');
+  const sum = opts.sum || (slice => slice.reduce((s,v)=> s + (v||0), 0));
+  const cellAttrs = opts.cellAttrs || (() => '');
+  const wrap = s => opts.bold ? `<strong>${s}</strong>` : s;
+
+  let out = '';
+  for(let i=0; i<holesCount; i++){
+    out += `<td${cellAttrs(i)}>${display(values[i])}</td>`;
+    if(holesCount === 18 && i === 8){
+      out += `<td class="subtotal-col">${wrap(sum(values.slice(0,9)))}</td>`;
+    }
+  }
+  if(holesCount === 18){
+    out += `<td class="subtotal-col">${wrap(sum(values.slice(9,18)))}</td>`;
+  }
+  out += `<td>${wrap(sum(values))}</td>`;
+  return out;
+}
+
 function buildScorecardTable(round, editable, showPutts, showGir){
   const players = ['You', ...round.guests];
-  let header = '<tr><th>Hole</th>' + round.holes.map(h=>`<th>${h.number}</th>`).join('') + '<th>Tot</th></tr>';
-  let parRow = '<tr><td>Par</td>' + round.holes.map(h=>`<td>${h.par != null ? h.par : '–'}</td>`).join('') +
-    `<td>${round.holes.reduce((s,h)=>s+(h.par||0),0)}</td></tr>`;
+  const holesCount = round.holesCount;
 
-  let rows = players.map((p, pi) => {
-    const cells = round.holes.map(h => {
-      const val = pi === 0 ? h.score : h.guestScores[pi-1];
-      return `<td${editable ? ` onclick="jumpToHole(${h.number-1})" style="cursor:pointer;"` : ''}>${val != null ? val : '–'}</td>`;
-    }).join('');
-    const total = round.holes.reduce((s,h) => {
-      const val = pi === 0 ? h.score : h.guestScores[pi-1];
-      return s + (val || 0);
-    }, 0);
-    return `<tr class="${pi===0?'':''}"><td>${escapeHtml(p)}</td>${cells}<td><strong>${total}</strong></td></tr>`;
+  let headerCells = '';
+  for(let i=0; i<holesCount; i++){
+    headerCells += `<th>${i+1}</th>`;
+    if(holesCount === 18 && i === 8) headerCells += `<th class="subtotal-col">OUT</th>`;
+  }
+  if(holesCount === 18) headerCells += `<th class="subtotal-col">IN</th>`;
+  const header = `<tr><th>Hole</th>${headerCells}<th>Tot</th></tr>`;
+
+  const pars = round.holes.map(h => h.par);
+  const parRow = `<tr><td>Par</td>${scorecardRowCells(pars, holesCount, {})}</tr>`;
+
+  const rows = players.map((p, pi) => {
+    const scores = round.holes.map(h => pi === 0 ? h.score : h.guestScores[pi-1]);
+    const cells = scorecardRowCells(scores, holesCount, {
+      bold: true,
+      cellAttrs: editable ? (i => ` onclick="jumpToHole(${i})" style="cursor:pointer;"`) : undefined
+    });
+    return `<tr><td>${escapeHtml(p)}</td>${cells}</tr>`;
   }).join('');
 
   let puttsRow = '';
   if(showPutts){
-    puttsRow = '<tr><td>Putts</td>' + round.holes.map(h=>`<td>${h.putts != null ? h.putts : '–'}</td>`).join('') +
-      `<td>${round.holes.reduce((s,h)=>s+(h.putts||0),0)}</td></tr>`;
+    const putts = round.holes.map(h => h.putts);
+    puttsRow = `<tr><td>Putts</td>${scorecardRowCells(putts, holesCount, {})}</tr>`;
   }
 
   let girRow = '';
   if(showGir){
-    girRow = '<tr><td>GIR</td>' + round.holes.map(h=>`<td>${h.gir===true?'✓':(h.gir===false?'✗':'–')}</td>`).join('') +
-      `<td>${round.holes.filter(h=>h.gir===true).length}</td></tr>`;
+    const girs = round.holes.map(h => h.gir);
+    girRow = `<tr><td>GIR</td>${scorecardRowCells(girs, holesCount, {
+      display: v => v===true?'✓':(v===false?'✗':'–'),
+      sum: slice => slice.filter(v=>v===true).length
+    })}</tr>`;
   }
 
   return `<div style="overflow-x:auto;"><table class="score-table">${header}${parRow}${rows}${puttsRow}${girRow}</table></div>`;
@@ -1840,32 +1872,75 @@ function drawRoundedRect(ctx, x, y, w, h, r){
   ctx.closePath();
 }
 
-function drawTableRow(ctx, x, y, labelColW, colW, holesN, totalColW, label, values, totalStr, opts){
+function computeColumnLayout(holesN, labelColW, holeColW, subColW){
+  let x = labelColW;
+  const cols = [];
+  for(let i=0; i<holesN; i++){
+    cols.push({x, w:holeColW, type:'hole', index:i});
+    x += holeColW;
+    if(holesN === 18 && i === 8){
+      cols.push({x, w:subColW, type:'out'});
+      x += subColW;
+    }
+  }
+  if(holesN === 18){
+    cols.push({x, w:subColW, type:'in'});
+    x += subColW;
+  }
+  cols.push({x, w:subColW, type:'tot'});
+  x += subColW;
+  return {cols, totalWidth: x};
+}
+
+function drawTableRow(ctx, x0, y, layout, label, rawValues, opts){
   opts = opts || {};
-  const COL_INK = '#10201A', COL_MUTED = '#6B7A70', COL_LINE = '#DCE3D5';
+  const COL_INK='#10201A', COL_MUTED='#6B7A70', COL_LINE='#DCE3D5', COL_SUBBG='#EAEFE4';
+  const isHeader = !!opts.headerRow;
+  const bold = !!opts.bold;
+  const sumMode = opts.subtotalMode || 'sum';
+
+  const sumRange = (start, end) => {
+    const slice = rawValues.slice(start, end);
+    if(sumMode === 'count-check') return slice.filter(v => v === true).length;
+    return slice.reduce((s,v) => s + (typeof v === 'number' ? v : 0), 0);
+  };
 
   ctx.textBaseline = 'middle';
-  ctx.font = opts.headerRow ? "700 9px 'JetBrains Mono', monospace" : (opts.bold ? "700 10px 'JetBrains Mono', monospace" : "10px 'JetBrains Mono', monospace");
-  ctx.fillStyle = opts.headerRow ? COL_MUTED : COL_INK;
-
   ctx.textAlign = 'left';
-  ctx.fillText(label, x+2, y+10);
+  ctx.font = isHeader ? "700 9px 'JetBrains Mono', monospace" : "10px 'JetBrains Mono', monospace";
+  ctx.fillStyle = isHeader ? COL_MUTED : COL_INK;
+  ctx.fillText(label, x0+2, y+10);
 
-  ctx.textAlign = 'center';
-  values.forEach((v, i) => {
-    const cx = x + labelColW + i*colW + colW/2;
-    ctx.fillText(v, cx, y+10);
+  layout.cols.forEach(col => {
+    let text, cellBold = bold;
+    if(col.type === 'hole'){
+      const v = rawValues[col.index];
+      if(isHeader) text = String(col.index+1);
+      else if(sumMode === 'count-check') text = v===true?'✓':(v===false?'✗':'–');
+      else text = (v!=null ? String(v) : '–');
+    } else {
+      cellBold = true;
+      if(col.type === 'out') text = isHeader ? 'OUT' : String(sumRange(0,9));
+      else if(col.type === 'in') text = isHeader ? 'IN' : String(sumRange(9,18));
+      else text = isHeader ? 'TOT' : String(sumRange(0, rawValues.length));
+    }
+
+    if(col.type !== 'hole'){
+      ctx.fillStyle = COL_SUBBG;
+      ctx.fillRect(x0+col.x, y, col.w, 20);
+    }
+
+    ctx.textAlign = 'center';
+    ctx.font = isHeader ? "700 9px 'JetBrains Mono', monospace" : (cellBold ? "700 10px 'JetBrains Mono', monospace" : "10px 'JetBrains Mono', monospace");
+    ctx.fillStyle = isHeader ? COL_MUTED : COL_INK;
+    ctx.fillText(text, x0 + col.x + col.w/2, y+10);
   });
-
-  ctx.font = "700 10px 'JetBrains Mono', monospace";
-  ctx.fillStyle = COL_INK;
-  ctx.fillText(totalStr, x + labelColW + holesN*colW + totalColW/2, y+10);
 
   ctx.strokeStyle = COL_LINE;
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(x, y+20);
-  ctx.lineTo(x + labelColW + holesN*colW + totalColW, y+20);
+  ctx.moveTo(x0, y+20);
+  ctx.lineTo(x0 + layout.totalWidth, y+20);
   ctx.stroke();
 }
 
@@ -1876,8 +1951,10 @@ function drawScorecardCanvas(round){
   const holesN = round.holesCount;
 
   const pad = 20, contentW = 400, W = contentW + pad*2;
-  const labelColW = 46, totalColW = 34;
-  const colW = Math.max(14, Math.floor((contentW - labelColW - totalColW) / holesN));
+  const labelColW = 42, subColW = 30;
+  const numSubCols = holesN === 18 ? 3 : 1;
+  const colW = Math.max(14, Math.floor((contentW - labelColW - numSubCols*subColW) / holesN));
+  const layout = computeColumnLayout(holesN, labelColW, colW, subColW);
   const rowH = 20;
   const numDataRows = 1 + players.length; // par + players
   const headerH = 32, bannerH = 92, statH = 62, gap = 14, footerH = 24;
@@ -1965,14 +2042,13 @@ function drawScorecardCanvas(round){
 
   // Scorecard table
   let ty = y;
-  drawTableRow(ctx, pad, ty, labelColW, colW, holesN, totalColW, 'HOLE', round.holes.map(h=>String(h.number)), 'TOT', {headerRow:true});
+  drawTableRow(ctx, pad, ty, layout, 'HOLE', new Array(holesN).fill(null), {headerRow:true});
   ty += rowH;
-  drawTableRow(ctx, pad, ty, labelColW, colW, holesN, totalColW, 'Par', round.holes.map(h=>h.par!=null?String(h.par):'–'), String(totalPar));
+  drawTableRow(ctx, pad, ty, layout, 'Par', round.holes.map(h=>h.par));
   ty += rowH;
   players.forEach((p,pi) => {
-    const vals = round.holes.map(h => { const v = pi===0? h.score : h.guestScores[pi-1]; return v!=null?String(v):'–'; });
-    const total = round.holes.reduce((s,h)=>{ const v = pi===0? h.score : h.guestScores[pi-1]; return s+(v||0); },0);
-    drawTableRow(ctx, pad, ty, labelColW, colW, holesN, totalColW, p, vals, String(total), {bold:true});
+    const vals = round.holes.map(h => pi===0 ? h.score : h.guestScores[pi-1]);
+    drawTableRow(ctx, pad, ty, layout, p, vals, {bold:true});
     ty += rowH;
   });
 
