@@ -491,6 +491,8 @@
       <div id="home-greeting" class="topbar-sub"></div>
     </div>
 
+    <div id="home-handicap"></div>
+
     <div class="filters">
       <select id="filter-course" onchange="renderHome()"></select>
       <select id="filter-year" onchange="renderHome()"></select>
@@ -514,7 +516,7 @@
     </div>
     <div class="card">
       <label>Course name</label>
-      <input type="text" id="sr-course" list="course-list" placeholder="e.g. Pebble Creek">
+      <input type="text" id="sr-course" list="course-list" placeholder="e.g. Pebble Creek" oninput="prefillCourseTeeInfo()">
       <datalist id="course-list"></datalist>
 
       <label>Holes</label>
@@ -525,6 +527,18 @@
 
       <label>Date</label>
       <input type="date" id="sr-date">
+
+      <div class="section-divider"><span class="sd-label">Tee Info <span style="text-transform:none; font-weight:400;">(optional)</span></span><span class="sd-line"></span></div>
+      <label>Tees played</label>
+      <input type="text" id="sr-tee" placeholder="e.g. Blue, White, Championship">
+
+      <label>Course rating</label>
+      <input type="number" id="sr-rating" placeholder="e.g. 71.4" step="0.1" inputmode="decimal">
+      <div class="field-hint">Found on the scorecard for the tees you're playing.</div>
+
+      <label>Slope rating</label>
+      <input type="number" id="sr-slope" placeholder="e.g. 130" min="55" max="155" inputmode="numeric">
+      <div class="field-hint">Add these to include this round in your handicap estimate.</div>
 
       <label>Guest players <span style="text-transform:none; font-weight:400;">(optional — scored for this round only)</span></label>
       <div id="sr-buddy-chips"></div>
@@ -906,6 +920,67 @@ function computeStats(rounds){
   };
 }
 
+// Number of Score Differentials to average, and any adjustment applied,
+// based on how many qualifying rounds exist — mirrors the official WHS
+// table for scoring records with fewer than 20 rounds (Rule 5.2a).
+const HANDICAP_TABLE = {
+  3: {count:1, adj:-2.0}, 4: {count:1, adj:-1.0}, 5: {count:1, adj:0},
+  6: {count:2, adj:-1.0}, 7: {count:2, adj:0}, 8: {count:2, adj:0},
+  9: {count:3, adj:0}, 10:{count:3, adj:0}, 11:{count:3, adj:0},
+  12:{count:4, adj:0}, 13:{count:4, adj:0}, 14:{count:4, adj:0},
+  15:{count:5, adj:0}, 16:{count:5, adj:0},
+  17:{count:6, adj:0}, 18:{count:6, adj:0},
+  19:{count:7, adj:0}
+};
+
+function computeHandicapIndex(){
+  // Only 18-hole rounds with a course rating and slope on file are eligible.
+  // (9-hole combining and the Playing Conditions Calculation are part of the
+  // official WHS method but are out of scope for this simplified estimate.)
+  const eligible = state.rounds
+    .filter(r => r.holesCount === 18 && r.courseRating != null && r.slopeRating != null)
+    .sort((a,b)=> b.date.localeCompare(a.date));
+
+  if(eligible.length < 3) return {index: null, roundsUsed: 0, roundsNeeded: 3 - eligible.length};
+
+  const pool = eligible.slice(0, 20);
+  const differentials = pool.map(r => {
+    const score = r.holes.reduce((s,h)=> s + (h.score||0), 0);
+    const diff = (113 / r.slopeRating) * (score - r.courseRating);
+    return Math.round(diff * 10) / 10;
+  }).sort((a,b)=> a-b);
+
+  const n = pool.length;
+  const rule = n >= 20 ? {count:8, adj:0} : HANDICAP_TABLE[n];
+  const selected = differentials.slice(0, rule.count);
+  const avg = selected.reduce((s,d)=> s+d, 0) / selected.length;
+  let index = Math.round((avg + rule.adj) * 10) / 10;
+  index = Math.min(index, 54.0); // WHS maximum
+
+  return {index, roundsUsed: pool.length};
+}
+
+function handicapCardHtml(){
+  const result = computeHandicapIndex();
+  const displayVal = result.index == null ? '—' :
+    (result.index < 0 ? '+' + Math.abs(result.index).toFixed(1) : result.index.toFixed(1));
+  const sub = result.index == null
+    ? `Log ${result.roundsNeeded} more 18-hole round${result.roundsNeeded===1?'':'s'} with tee rating &amp; slope to unlock this`
+    : `Based on your best rounds from your last ${result.roundsUsed} qualifying round${result.roundsUsed===1?'':'s'}`;
+
+  return `
+    <div class="section-divider"><span class="sd-label">Handicap Index</span><span class="sd-line"></span></div>
+    <div class="card">
+      <div class="stat-card wide" style="box-shadow:none; border:none; padding:0;">
+        <div>
+          <div class="stat-value" style="font-size:34px;">${displayVal}</div>
+          <div class="stat-label" style="margin-top:4px; text-transform:none; letter-spacing:0;">${sub}</div>
+        </div>
+      </div>
+      <div class="field-hint" style="margin-top:12px;">Simplified estimate based on the World Handicap System formula — not an official USGA Handicap Index. Doesn't apply playing-conditions adjustments or hole-score caps.</div>
+    </div>`;
+}
+
 function computeRecords(rounds){
   if(rounds.length === 0) return null;
   const sorted = [...rounds].sort((a,b)=> a.date.localeCompare(b.date));
@@ -974,6 +1049,7 @@ function renderHome(){
   const stats = computeStats(filtered);
   const container = document.getElementById('home-content');
   document.getElementById('home-greeting').textContent = state.profile ? state.profile.name : '';
+  document.getElementById('home-handicap').innerHTML = handicapCardHtml();
 
   let resumeHtml = '';
   if(state.draft){
@@ -1085,6 +1161,9 @@ function openStartRound(){
   pendingGuests = [];
   pendingHoles = 18;
   document.getElementById('sr-course').value = '';
+  document.getElementById('sr-tee').value = '';
+  document.getElementById('sr-rating').value = '';
+  document.getElementById('sr-slope').value = '';
   document.getElementById('sr-guest-input').value = '';
   document.getElementById('course-list').innerHTML = uniqueCourses().map(c=>`<option value="${escapeAttr(c)}">`).join('');
   const today = new Date();
@@ -1159,11 +1238,48 @@ function getCourseParTemplate(course, holesCount){
   return pars.every(p => p != null) ? pars : null;
 }
 
+function getCourseTeeDefaults(course){
+  const matches = state.rounds
+    .filter(r => r.course.trim().toLowerCase() === course.trim().toLowerCase())
+    .sort((a,b)=> b.date.localeCompare(a.date));
+  const src = matches.find(r => r.tee != null || r.courseRating != null || r.slopeRating != null);
+  if(!src) return null;
+  return { tee: src.tee || null, courseRating: src.courseRating != null ? src.courseRating : null, slopeRating: src.slopeRating != null ? src.slopeRating : null };
+}
+
+function prefillCourseTeeInfo(){
+  const course = document.getElementById('sr-course').value.trim();
+  if(!course) return;
+  const defaults = getCourseTeeDefaults(course);
+  if(!defaults) return;
+  const teeField = document.getElementById('sr-tee');
+  const ratingField = document.getElementById('sr-rating');
+  const slopeField = document.getElementById('sr-slope');
+  if(!teeField.value && defaults.tee) teeField.value = defaults.tee;
+  if(!ratingField.value && defaults.courseRating != null) ratingField.value = defaults.courseRating;
+  if(!slopeField.value && defaults.slopeRating != null) slopeField.value = defaults.slopeRating;
+}
+
 function beginRound(){
   const course = document.getElementById('sr-course').value.trim();
   const date = document.getElementById('sr-date').value;
   if(!course){ toast('Enter a course name'); return; }
   if(!date){ toast('Choose a date'); return; }
+
+  const teeVal = document.getElementById('sr-tee').value.trim();
+  const ratingVal = document.getElementById('sr-rating').value;
+  const slopeVal = document.getElementById('sr-slope').value;
+  const courseRating = ratingVal !== '' ? parseFloat(ratingVal) : null;
+  const slopeRating = slopeVal !== '' ? parseInt(slopeVal, 10) : null;
+
+  if((courseRating != null && slopeRating == null) || (courseRating == null && slopeRating != null)){
+    toast('Enter both course rating and slope, or leave both blank');
+    return;
+  }
+  if(slopeRating != null && (slopeRating < 55 || slopeRating > 155)){
+    toast('Slope rating is usually between 55 and 155');
+    return;
+  }
 
   const parTemplate = getCourseParTemplate(course, pendingHoles);
 
@@ -1179,6 +1295,7 @@ function beginRound(){
   state.draft = {
     id: 'r_' + Date.now(),
     date, course, holesCount: pendingHoles,
+    tee: teeVal || null, courseRating, slopeRating,
     guests: [...pendingGuests],
     holes,
     currentHoleIndex: 0,
@@ -1627,11 +1744,52 @@ function openHistoryDetail(id){
       <div style="font-family:var(--serif); font-weight:700; font-size:16px; color:var(--green-deep); margin-bottom:6px;">Scorecard</div>
       ${buildScorecardTable(round, false, false, false)}
     </div>
+
+    <div class="section-divider"><span class="sd-label">Round Details</span><span class="sd-line"></span></div>
+    <div class="card">
+      <label>Tees played</label>
+      <input type="text" id="rd-tee-input" value="${escapeAttr(round.tee || '')}" placeholder="e.g. Blue, White, Championship">
+
+      <label>Course rating</label>
+      <input type="number" id="rd-rating-input" value="${round.courseRating != null ? round.courseRating : ''}" placeholder="e.g. 71.4" step="0.1" inputmode="decimal">
+
+      <label>Slope rating</label>
+      <input type="number" id="rd-slope-input" value="${round.slopeRating != null ? round.slopeRating : ''}" placeholder="e.g. 130" min="55" max="155" inputmode="numeric">
+      <div class="field-hint">${round.holesCount === 18 ? 'Add rating and slope to include this round in your handicap estimate.' : 'Only 18-hole rounds count toward the handicap estimate.'}</div>
+      <button class="btn btn-secondary btn-sm" style="margin-top:14px;" onclick="saveRoundDetails('${round.id}')">Save Details</button>
+    </div>
+
     <button class="btn btn-secondary" onclick="exportScorecardImage('${round.id}')">Share Scorecard</button>
     <button class="btn btn-secondary" style="margin-top:8px;" onclick="editRound('${round.id}')">Edit Round</button>
     <button class="btn btn-ghost" style="margin-top:8px; color:var(--flag-red);" onclick="deleteRound('${round.id}')">Delete Round</button>
   `;
   showScreen('screen-history-detail');
+}
+
+function saveRoundDetails(roundId){
+  const round = state.rounds.find(r => r.id === roundId);
+  if(!round) return;
+  const teeVal = document.getElementById('rd-tee-input').value.trim();
+  const ratingVal = document.getElementById('rd-rating-input').value;
+  const slopeVal = document.getElementById('rd-slope-input').value;
+  const courseRating = ratingVal !== '' ? parseFloat(ratingVal) : null;
+  const slopeRating = slopeVal !== '' ? parseInt(slopeVal, 10) : null;
+
+  if((courseRating != null && slopeRating == null) || (courseRating == null && slopeRating != null)){
+    toast('Enter both course rating and slope, or leave both blank');
+    return;
+  }
+  if(slopeRating != null && (slopeRating < 55 || slopeRating > 155)){
+    toast('Slope rating is usually between 55 and 155');
+    return;
+  }
+
+  round.tee = teeVal || null;
+  round.courseRating = courseRating;
+  round.slopeRating = slopeRating;
+  saveState();
+  toast('Round details saved');
+  renderHome();
 }
 
 function editRound(roundId){
