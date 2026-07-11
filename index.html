@@ -203,6 +203,31 @@
     border:none; background:none; color:var(--flag-red); font-size:18px; cursor:pointer; padding:4px;
   }
 
+  .player-chip{
+    display:inline-flex; align-items:center;
+    background:var(--white); border:1.5px solid var(--paper-line);
+    border-radius:20px; padding:8px 16px; font-size:13px; font-weight:600;
+    margin:0 6px 8px 0; cursor:pointer; color:var(--muted);
+  }
+  .player-chip.selected{background:var(--green-deep); border-color:var(--green-deep); color:var(--white);}
+  .player-chip:active{transform:scale(0.96);}
+
+  .leaderboard-row{
+    display:flex; align-items:center; gap:12px;
+    padding:12px 0; border-bottom:1px solid var(--paper-dim);
+  }
+  .leaderboard-row:last-child{border-bottom:none;}
+  .lb-rank{
+    width:28px; height:28px; border-radius:50%; flex-shrink:0;
+    display:flex; align-items:center; justify-content:center;
+    font-family:var(--mono); font-weight:700; font-size:13px;
+    background:var(--paper-dim); color:var(--muted);
+  }
+  .leaderboard-row.rank-1 .lb-rank{background:var(--green-deep); color:var(--white);}
+  .lb-name{flex:1; font-weight:600; font-size:15px; color:var(--ink);}
+  .lb-wins{font-family:var(--mono); font-weight:700; font-size:20px; color:var(--green-deep); text-align:right;}
+  .lb-wins-label{font-size:10px; font-weight:600; color:var(--muted); text-transform:uppercase; margin-left:4px;}
+
   .segmented{display:flex; border:1.5px solid var(--paper-line); border-radius:10px; overflow:hidden;}
   .segmented button{
     flex:1; padding:12px; border:none; background:var(--paper); color:var(--muted);
@@ -650,6 +675,18 @@
     <div id="history-detail-content"></div>
   </div>
 
+  <!-- ============ VERSUS ============ -->
+  <div class="screen" id="screen-versus">
+    <h1 class="page-title">Head-to-Head</h1>
+    <div class="card">
+      <label>Players</label>
+      <div id="versus-player-chips"></div>
+      <div class="field-hint">Tap to include or exclude a player. Shows wins from rounds where everyone selected played together.</div>
+    </div>
+    <div id="versus-leaderboard"></div>
+    <button class="btn btn-secondary hidden" id="versus-share-btn" onclick="exportLeaderboardImage()">Share Leaderboard</button>
+  </div>
+
   <!-- ============ PROFILE ============ -->
   <div class="screen" id="screen-profile">
     <h1 class="page-title">Profile</h1>
@@ -701,6 +738,9 @@
     </button>
     <button class="nav-btn" id="nav-history" onclick="navTo('screen-history')">
       <span class="ni">▤</span><span class="nl">History</span>
+    </button>
+    <button class="nav-btn" id="nav-versus" onclick="navTo('screen-versus')">
+      <span class="ni">🏆</span><span class="nl">Versus</span>
     </button>
     <button class="nav-btn" id="nav-profile" onclick="navTo('screen-profile')">
       <span class="ni">●</span><span class="nl">Profile</span>
@@ -803,6 +843,7 @@ function navTo(id){
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
   if(id === 'screen-home'){ document.getElementById('nav-home').classList.add('active'); renderHome(); }
   if(id === 'screen-history'){ document.getElementById('nav-history').classList.add('active'); renderHistory(); }
+  if(id === 'screen-versus'){ document.getElementById('nav-versus').classList.add('active'); renderVersus(); }
   if(id === 'screen-profile'){ document.getElementById('nav-profile').classList.add('active'); loadProfileForm(); }
 }
 
@@ -1864,12 +1905,17 @@ function saveProfile(){
   toast('Profile updated');
 }
 
+function winnersOf(round){
+  if(!round.winner) return [];
+  return round.winner.split(' & ').map(w => w.replace(' (Tie)','').trim());
+}
+
 /* ============================================================
    GOLF BUDDIES
    ============================================================ */
 function buddyStats(name){
   const rounds = state.rounds.filter(r => r.guests.includes(name));
-  const wins = rounds.filter(r => r.winner && r.winner.split(' & ').some(w => w.replace(' (Tie)','').trim() === name)).length;
+  const wins = rounds.filter(r => winnersOf(r).includes(name)).length;
   return {rounds: rounds.length, wins};
 }
 function renderBuddiesList(){
@@ -1911,6 +1957,211 @@ function removeBuddy(index){
     saveState();
     renderBuddiesList();
   }, 'Remove');
+}
+
+/* ============================================================
+   HEAD-TO-HEAD
+   ============================================================ */
+let versusSelected = null; // Set of selected player names; lazily initialized
+
+function allKnownPlayers(){
+  const names = new Set([state.profile.name, ...state.buddies]);
+  state.rounds.forEach(r => r.guests.forEach(g => names.add(g)));
+  return [...names];
+}
+
+function computeHeadToHead(selectedNames){
+  if(selectedNames.length === 0) return null;
+  const qualifying = state.rounds.filter(r => {
+    const participants = [state.profile.name, ...r.guests];
+    return selectedNames.every(name => participants.includes(name));
+  });
+  const standings = selectedNames.map(name => {
+    const wins = qualifying.filter(r => winnersOf(r).includes(name)).length;
+    return {name, wins};
+  });
+  standings.sort((a,b)=> b.wins - a.wins || a.name.localeCompare(b.name));
+  return {standings, roundsPlayed: qualifying.length};
+}
+
+function toggleVersusPlayer(name){
+  if(versusSelected.has(name)) versusSelected.delete(name);
+  else versusSelected.add(name);
+  renderVersusPlayerChips();
+  renderVersusLeaderboard();
+}
+
+function renderVersusPlayerChips(){
+  const wrap = document.getElementById('versus-player-chips');
+  const names = allKnownPlayers();
+  if(!versusSelected){
+    versusSelected = new Set(names);
+  }
+  if(names.length <= 1){
+    wrap.innerHTML = `<p style="font-size:13px; color:var(--muted); margin:0;">Play a round with guests to compare head-to-head.</p>`;
+    return;
+  }
+  wrap.innerHTML = names.map(n => {
+    const sel = versusSelected.has(n);
+    return `<span class="player-chip ${sel?'selected':''}" onclick="toggleVersusPlayer('${escapeAttr(n)}')">${escapeHtml(n)}</span>`;
+  }).join('');
+}
+
+function renderVersusLeaderboard(){
+  const wrap = document.getElementById('versus-leaderboard');
+  const shareBtn = document.getElementById('versus-share-btn');
+  const selected = versusSelected ? [...versusSelected] : [];
+
+  if(selected.length === 0){
+    wrap.innerHTML = `<div class="card empty-state"><p style="margin:0;">Select at least one player to see results.</p></div>`;
+    shareBtn.classList.add('hidden');
+    return;
+  }
+
+  const result = computeHeadToHead(selected);
+  if(result.roundsPlayed === 0){
+    wrap.innerHTML = `<div class="card empty-state"><p style="margin:0;">No rounds found with all of these players together yet.</p></div>`;
+    shareBtn.classList.add('hidden');
+    return;
+  }
+
+  const rows = result.standings.map((s, i) => `
+    <div class="leaderboard-row ${i===0?'rank-1':''}">
+      <div class="lb-rank">${i+1}</div>
+      <div class="lb-name">${escapeHtml(s.name)}</div>
+      <div class="lb-wins">${s.wins}<span class="lb-wins-label">wins</span></div>
+    </div>`).join('');
+
+  wrap.innerHTML = `
+    <div class="card">
+      <div style="font-family:var(--serif); font-weight:700; font-size:16px; color:var(--green-deep); margin-bottom:2px;">Leaderboard</div>
+      <div style="font-size:12px; color:var(--muted); font-family:var(--mono); margin-bottom:10px;">${result.roundsPlayed} round${result.roundsPlayed===1?'':'s'} together</div>
+      ${rows}
+    </div>`;
+  shareBtn.classList.remove('hidden');
+}
+
+function renderVersus(){
+  renderVersusPlayerChips();
+  renderVersusLeaderboard();
+}
+
+function drawLeaderboardCanvas(result){
+  const COL_PAPER='#F6F8F3', COL_WHITE='#FFFFFF', COL_LINE='#DCE3D5', COL_MUTED='#6B7A70', COL_GREEN='#0F7A46', COL_TEAL='#0D9488', COL_INK='#10201A';
+
+  const pad = 20, contentW = 400, W = contentW + pad*2;
+  const rowH = 48;
+  const headerH = 40, bannerH = 64, gap = 14, footerH = 24;
+  const H = pad + headerH + gap + bannerH + gap + (result.standings.length*rowH) + gap + footerH + pad;
+
+  const dpr = 2;
+  const canvas = document.createElement('canvas');
+  canvas.width = W*dpr; canvas.height = H*dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  ctx.fillStyle = COL_PAPER;
+  ctx.fillRect(0,0,W,H);
+
+  let y = pad;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillStyle = COL_GREEN;
+  ctx.font = "700 20px 'Space Grotesk', sans-serif";
+  ctx.fillText('⛳ Tamarron', pad, y);
+  y += headerH + gap;
+
+  const grad = ctx.createLinearGradient(pad, y, W-pad, y+bannerH);
+  grad.addColorStop(0, COL_GREEN);
+  grad.addColorStop(1, COL_TEAL);
+  ctx.fillStyle = grad;
+  drawRoundedRect(ctx, pad, y, contentW, bannerH, 14);
+  ctx.fill();
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = "700 17px 'Space Grotesk', sans-serif";
+  ctx.fillText('Head-to-Head', W/2, y+18);
+  ctx.font = "11px 'JetBrains Mono', monospace";
+  ctx.globalAlpha = 0.85;
+  ctx.fillText(`${result.roundsPlayed} round${result.roundsPlayed===1?'':'s'} together`, W/2, y+42);
+  ctx.globalAlpha = 1;
+  y += bannerH + gap;
+
+  result.standings.forEach((s,i) => {
+    const rowY = y + i*rowH;
+    if(i % 2 === 1){
+      ctx.fillStyle = '#EAEFE4';
+      ctx.fillRect(pad, rowY, contentW, rowH);
+    }
+    const cx = pad+22, cy = rowY+rowH/2;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 16, 0, Math.PI*2);
+    ctx.fillStyle = i===0 ? COL_GREEN : '#DCE3D5';
+    ctx.fill();
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = i===0 ? '#FFFFFF' : COL_MUTED;
+    ctx.font = "700 13px 'JetBrains Mono', monospace";
+    ctx.fillText(String(i+1), cx, cy+1);
+
+    ctx.textAlign = 'left';
+    ctx.fillStyle = COL_INK;
+    ctx.font = "700 15px 'Inter', sans-serif";
+    ctx.fillText(s.name, pad+48, cy+1);
+
+    ctx.textAlign = 'right';
+    ctx.fillStyle = COL_GREEN;
+    ctx.font = "700 20px 'JetBrains Mono', monospace";
+    ctx.fillText(String(s.wins), pad+contentW-50, cy+1);
+    ctx.font = "600 9px 'Inter', sans-serif";
+    ctx.fillStyle = COL_MUTED;
+    ctx.textAlign = 'left';
+    ctx.fillText('WINS', pad+contentW-44, cy+1);
+  });
+  y += result.standings.length*rowH + gap;
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  ctx.fillStyle = COL_MUTED;
+  ctx.font = "600 9px 'JetBrains Mono', monospace";
+  ctx.fillText('TRACKED WITH TAMARRON', W/2, y+4);
+
+  return canvas;
+}
+
+function exportLeaderboardImage(){
+  const selected = versusSelected ? [...versusSelected] : [];
+  if(selected.length === 0){ toast('Select at least one player first'); return; }
+  const result = computeHeadToHead(selected);
+  if(!result || result.roundsPlayed === 0){ toast('No rounds to share yet'); return; }
+
+  toast('Preparing image…');
+  requestAnimationFrame(() => {
+    try{
+      const canvas = drawLeaderboardCanvas(result);
+      canvas.toBlob((blob) => {
+        if(!blob){ toast('Could not generate image'); return; }
+        const fileName = `tamarron-head-to-head-${new Date().toISOString().slice(0,10)}.jpg`;
+        const file = new File([blob], fileName, { type: 'image/jpeg' });
+
+        const finishUp = () => {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = fileName;
+          document.body.appendChild(a); a.click(); document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+          toast('Leaderboard image saved');
+        };
+
+        if(navigator.canShare && navigator.canShare({ files: [file] })){
+          navigator.share({ files: [file], title: 'Head-to-Head Leaderboard' }).catch(() => finishUp());
+        } else {
+          finishUp();
+        }
+      }, 'image/jpeg', 0.92);
+    }catch(err){
+      console.error(err);
+      toast('Could not generate image');
+    }
+  });
 }
 
 /* ============================================================
@@ -2428,6 +2679,7 @@ function refreshCurrentScreen(){
   if(id === 'screen-onboarding'){ setChromeVisible(true); navTo('screen-home'); return; }
   if(id === 'screen-home'){ renderHome(); }
   else if(id === 'screen-history'){ renderHistory(); }
+  else if(id === 'screen-versus'){ renderVersus(); }
   else if(id === 'screen-profile'){ loadProfileForm(); }
   else if(id === 'screen-round'){
     if(state.draft){ enterRoundScreen(); }
