@@ -535,7 +535,7 @@
   <!-- ============ START ROUND ============ -->
   <div class="screen" id="screen-start-round">
     <div class="topbar" style="padding-left:0;">
-      <button class="icon-btn" onclick="showScreen('screen-home')">←</button>
+      <button class="icon-btn" onclick="setChromeVisible(true); showScreen('screen-home');">←</button>
       <div style="font-family:var(--serif); font-weight:700; font-size:17px; color:var(--green-deep);">New Round</div>
       <div style="width:38px;"></div>
     </div>
@@ -1199,6 +1199,7 @@ function openStartRound(){
     }, 'Discard & Start New');
     return;
   }
+  setChromeVisible(false);
   pendingGuests = [];
   pendingHoles = 18;
   document.getElementById('sr-course').value = '';
@@ -1984,7 +1985,10 @@ function computeHeadToHead(selectedNames){
   return {standings, roundsPlayed: qualifying.length};
 }
 
-function toggleVersusPlayer(name){
+function toggleVersusPlayerAt(index){
+  const names = allKnownPlayers();
+  const name = names[index];
+  if(name == null) return;
   if(versusSelected.has(name)) versusSelected.delete(name);
   else versusSelected.add(name);
   renderVersusPlayerChips();
@@ -1996,14 +2000,20 @@ function renderVersusPlayerChips(){
   const names = allKnownPlayers();
   if(!versusSelected){
     versusSelected = new Set(names);
+  } else {
+    // Drop any previously-selected name no longer in the system (e.g. its
+    // only shared round was deleted) — otherwise it silently zeroes out
+    // the leaderboard for everyone else still selected, with no chip left
+    // to deselect it.
+    versusSelected = new Set([...versusSelected].filter(n => names.includes(n)));
   }
   if(names.length <= 1){
     wrap.innerHTML = `<p style="font-size:13px; color:var(--muted); margin:0;">Play a round with guests to compare head-to-head.</p>`;
     return;
   }
-  wrap.innerHTML = names.map(n => {
+  wrap.innerHTML = names.map((n, i) => {
     const sel = versusSelected.has(n);
-    return `<span class="player-chip ${sel?'selected':''}" onclick="toggleVersusPlayer('${escapeAttr(n)}')">${escapeHtml(n)}</span>`;
+    return `<span class="player-chip ${sel?'selected':''}" onclick="toggleVersusPlayerAt(${i})">${escapeHtml(n)}</span>`;
   }).join('');
 }
 
@@ -2011,6 +2021,12 @@ function renderVersusLeaderboard(){
   const wrap = document.getElementById('versus-leaderboard');
   const shareBtn = document.getElementById('versus-share-btn');
   const selected = versusSelected ? [...versusSelected] : [];
+
+  if(allKnownPlayers().length <= 1){
+    wrap.innerHTML = '';
+    shareBtn.classList.add('hidden');
+    return;
+  }
 
   if(selected.length === 0){
     wrap.innerHTML = `<div class="card empty-state"><p style="margin:0;">Select at least one player to see results.</p></div>`;
